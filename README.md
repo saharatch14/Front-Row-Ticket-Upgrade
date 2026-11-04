@@ -31,11 +31,11 @@ If you are developing a production application, we recommend enabling type-aware
 
 See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
 
-Q&A
-Q1.  How does your priority score work? 
-Q2.  How do you stop one fan group from dominating? 
-Q3.  How do you break ties? 
-Q4.  What is the time complexity of your grouping logic? 
-Q5.  What is one case where your system may still feel unfair? 
-Q6.  How do Rush Hour, VIP Hour, and Fair Queue Mode work? 
-Q7.  What would you improve with more time?
+## Q&A
+Q1.  How does your priority score work? <br>
+Q2.  How do you stop one fan group from dominating? <br>
+Q3.  How do you break ties? <br>
+Q4.  What is the time complexity of your grouping logic? <br>
+Q5.  What is one case where your system may still feel unfair? <br>
+Q6.  How do Rush Hour, VIP Hour, and Fair Queue Mode work? <br>
+Q7.  What would you improve with more time? <br>
