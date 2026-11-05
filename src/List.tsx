@@ -22,26 +22,26 @@ function List() {
   type FanGroup = {  id: string;  entries: TicketQueueEntry[];  representative: RankedEntry | null;  connectionReasons: string[]; }; 
   type ExcludedEntry = {  entry: TicketQueueEntry;  reason: string; };
 
+  type IdentifierType = "phone" | "device" | "payment";
+
   type Identifier = {
     key: string;
     reason: string;
   };
 
   // Scoring configuration
-  const SCORING = {
-    MAX_LOYALTY_POINTS: 1000,
-    MAX_WAIT_HOURS: 24,
-    MAX_TICKET_SCORE: 15,
-    MAX_UPGRADES: 3,
+  const scoring = {
+    maxLoyaltyPoints: 1000,
+    maxWaitingHours: 24,
+    fairnessStartHours: 2,
+    maxUpgrades: 3,
 
-    WEIGHTS: {
-      loyalty: 25,
-      waitingTime: 30,
-      vip: 15,
-      ticketValue: 15,
-      upgradeHistory: 10,
-      fairness: 5,
-    },
+    loyalty: 25,
+    waitingTime: 30,
+    vip: 15,
+    ticketValue: 15,
+    upgradeHistory: 10,
+    fairness: 5,
   } as const;
 
   const [word, setWord] = useState("")
@@ -49,54 +49,133 @@ function List() {
 
   const obj = JSON.parse(JSON.stringify(dataQueue)) as TicketQueueEntry[];
 
+  function validateEntry(
+    entry: TicketQueueEntry,
+    now: Date
+  ): string | null {
 
-function normalizeIdentifier(
-  value: string | null | undefined,
-  type: "phone" | "device" | "payment"
-): string | null {
+    if (entry.status === "cancelled") {
+      return "Entry is cancelled";
+    }
 
-  if (value == null || !value.trim()) {
+    if (entry.status === "upgraded") {
+      return "Entry was already upgraded";
+    }
+
+    const eventStart = new Date(entry.eventStartsAt);
+
+    if (
+      !Number.isFinite(eventStart.getTime())
+    ) {
+      return "Invalid event start time";
+    }
+
+    if (now.getTime() >= eventStart.getTime()) {
+      return "Concert has already started";
+    }
+
+    if (entry.membership === "blocked") {
+      return "Fan is blocked";
+    }
+
+    const ticketValue = Number(entry.ticketValue);
+
+    if (
+      entry.ticketValue === null ||
+      typeof entry.ticketValue === "string" &&
+        !entry.ticketValue.trim() ||
+      !Number.isFinite(ticketValue) ||
+      ticketValue <= 0
+    ) {
+      return "Invalid ticket value";
+    }
+
+    const joinedAt = new Date(entry.joinedQueueAt);
+
+    if (
+      !Number.isFinite(joinedAt.getTime()) ||
+      joinedAt.getTime() > now.getTime()
+    ) {
+      return "Invalid queue join time";
+    }
+
     return null;
   }
 
-  //const normalized = value.trim().toLowerCase();
+  function filterEligibleEntries(
+    entries: TicketQueueEntry[],
+    now: Date
+  ): {
+    eligibleEntries: TicketQueueEntry[];
+    excludedEntries: ExcludedEntry[];
+  } {
 
-  switch (type) {
-    case "phone":
-      return value.replace(/\D/g, "");
+    const eligibleEntries: TicketQueueEntry[] = [];
+    const excludedEntries: ExcludedEntry[] = [];
 
-    case "device":
-      // Exact full string matching
-      // Ignore leading/trailing spaces and letter casing
-      return value.trim().toLowerCase();
+    for (const entry of entries) {
 
-    case "payment":
-      // Exact full string matching
-      // Ignore leading/trailing spaces and letter casing
-      return value.trim().toLowerCase();
+      const reason = validateEntry(entry, now);
 
-    default:
-      return null;
+      if (reason !== null) {
+        excludedEntries.push({
+          entry,
+          reason,
+        });
+        continue;
+      }
+
+      eligibleEntries.push(entry);
+    }
+
+    return {
+      eligibleEntries,
+      excludedEntries,
+    };
   }
-}
+
+  function normalizeIdentifier(
+    value: string | null | undefined,
+    type: IdentifierType
+  ): string | null {
+
+    if (value == null || !value.trim()) {
+      return null;
+    }
+
+    const trimmed = value.trim();
+
+    switch (type) {
+      case "phone":
+        return trimmed.replace(/\D/g, "") || null;
+
+      case "device":
+      case "payment":
+        return trimmed.toLowerCase();
+    }
+  }
 
   function getIdentifiers(
     entry: TicketQueueEntry
   ): Identifier[] {
 
-    const fields = [
+    const fields: {
+      type: IdentifierType;
+      value: string | null | undefined;
+      reason: string;
+    }[] = [
       {
-        type: "phone" as const,
+        type: "phone",
         value: entry.phoneNumber,
         reason: "Shared phone number",
       },
       {
-        type: "device" as const,
+        type: "device",
         value: entry.deviceId,
         reason: "Shared device ID",
       },
       {
-        type: "payment" as const,
+        type: "payment",
         value: entry.paymentAccount,
         reason: "Shared payment account",
       },
@@ -120,15 +199,13 @@ function normalizeIdentifier(
     });
   }
 
-
   function buildFanGroups(
-    entries: TicketQueueEntry[],
-    rankedEntries: Map<TicketQueueEntry, RankedEntry>
+    entries: TicketQueueEntry[]
   ): FanGroup[] {
 
-    const parent = entries.map((_, index) => index);
+    const parent = entries.map((_, i) => i);
+    const rank = entries.map(() => 0);
 
-    // Find root with path compression
     function find(index: number): number {
 
       if (parent[index] !== index) {
@@ -138,37 +215,44 @@ function normalizeIdentifier(
       return parent[index];
     }
 
-    // Merge two groups
     function union(a: number, b: number): void {
 
-      const rootA = find(a);
-      const rootB = find(b);
+      let rootA = find(a);
+      let rootB = find(b);
 
-      if (rootA !== rootB) {
-        parent[rootB] = rootA;
+      if (rootA === rootB) return;
+
+      // Union by rank
+      if (rank[rootA] < rank[rootB]) {
+        [rootA, rootB] = [rootB, rootA];
+      }
+
+      parent[rootB] = rootA;
+
+      if (rank[rootA] === rank[rootB]) {
+        rank[rootA]++;
       }
     }
 
-    // Map identifiers to their first entry
+    // Connect entries using shared identifiers
     const identifierMap = new Map<
       string,
       { index: number; reason: string }
     >();
 
-    // STEP 1: Connect entries by 3 identifiers
+    const connectionReasons = new Map<
+      number,
+      Set<string>
+    >();
+
     entries.forEach((entry, index) => {
 
-      const identifiers = getIdentifiers(entry);
+      for (const identifier of getIdentifiers(entry)) {
 
-      for (const identifier of identifiers) {
-
-        const existing = identifierMap.get(
-          identifier.key
-        );
+        const existing = identifierMap.get(identifier.key);
 
         if (existing) {
 
-          // Same identifier = same fan group
           union(index, existing.index);
 
         } else {
@@ -181,315 +265,117 @@ function normalizeIdentifier(
       }
     });
 
-    // STEP 2: Build connected groups
-    const groups = new Map<
-      number,
-      {
-        entries: TicketQueueEntry[];
-        reasons: Set<string>;
-      }
-    >();
+    // Build connected components
+    const groups = new Map<number, TicketQueueEntry[]>();
 
     entries.forEach((entry, index) => {
 
       const root = find(index);
 
       if (!groups.has(root)) {
-        groups.set(root, {
-          entries: [],
-          reasons: new Set(),
-        });
+        groups.set(root, []);
       }
 
-      groups.get(root)!.entries.push(entry);
+      groups.get(root)!.push(entry);
     });
 
-    // STEP 3: Collect connection reasons
+    // Collect reasons for each connected group
     for (const [key, value] of identifierMap) {
 
-      const matchingEntries = entries.filter(
-        entry => getIdentifiers(entry).some(
+      const matchingEntries = entries.filter(entry =>
+        getIdentifiers(entry).some(
           identifier => identifier.key === key
         )
       );
 
-      if (matchingEntries.length < 2) {
-        continue;
-      }
+      if (matchingEntries.length < 2) continue;
 
       const root = find(value.index);
 
-      groups.get(root)!.reasons.add(value.reason);
-    }
-
-    // STEP 4: Select representative per group
-    return Array.from(groups.values()).map(
-      (group, index) => {
-
-        const candidates = group.entries
-          .map(entry => rankedEntries.get(entry))
-          .filter(
-            (item): item is RankedEntry =>
-              item !== undefined
-          )
-          .sort(compareRankedEntries);
-
-        return {
-          id: `fan-group-${index + 1}`,
-          entries: group.entries,
-          representative: candidates[0] ?? null,
-          connectionReasons: Array.from(group.reasons),
-        };
-      }
-    );
-  }
-    
-  function buildFrontRowUpgradeQueue(
-      entries: TicketQueueEntry[],
-      now: Date,
-    ): FrontRowUpgradeResult {
-
-      // 1. Validate entries
-      const eligibleEntries: TicketQueueEntry[] = [];
-      const excludedEntries: ExcludedEntry[] = [];
-
-      for (const entry of entries) {
-          //console.log("entry", entry)
-        const reason = validateEntry(entry, now);
-
-        if (reason !== null) {
-          excludedEntries.push({
-            entry,
-            reason,
-          });
-
-          continue;
+      if (!connectionReasons.has(root)) {
+        connectionReasons.set(root, new Set());
       }
 
-      eligibleEntries.push(entry);
-      }
+      connectionReasons.get(root)!.add(value.reason);
+    }
 
-
-    // 2. Calculate maximum ticket value
-    const maxTicketValue = Math.max(
-      0,
-      ...eligibleEntries.map(entry =>
-        Number(entry.ticketValue)
-      )
+    return Array.from(groups.entries()).map(
+      ([root, groupEntries], index) => ({
+        id: `fan-group-${index + 1}`,
+        entries: groupEntries,
+        representative: null,
+        connectionReasons: Array.from(
+          connectionReasons.get(find(root)) ?? []
+        ),
+      })
     );
-
-    // 3. Calculate score for eligible entries
-    const rankedEntries = new Map<
-      TicketQueueEntry,
-      RankedEntry
-    >();
-
-    for (const entry of eligibleEntries) {
-
-      const ranked = calculateScore(
-        entry,
-        now,
-        maxTicketValue
-      );
-
-      rankedEntries.set(entry, ranked);
-    }
-
-    // 4. Group related fans
-    // Include excluded entries to preserve all entries
-    const fanGroups = buildFanGroups(
-      entries,
-      rankedEntries
-    );
-
-    // 5. Select representative from each group
-    // Only eligible entries can become representatives
-    const representatives = fanGroups
-      .map(group => group.representative)
-      .filter(
-        (item): item is RankedEntry => item !== null
-      )
-      .sort(compareRankedEntries);
-
-    // 6. Select overall winner
-    const winner = representatives[0] ?? null;
-
-    // 7. Return final result
-    return {
-      winner,
-      fanGroups,
-      excludedEntries,
-    };
   }
-
-  function compareRankedEntries(
-    a: RankedEntry,
-    b: RankedEntry
-  ): number {
-
-    // Higher score first
-    if (a.score !== b.score) {
-      return b.score - a.score;
-    }
-
-    // Earlier queue time first
-    const timeA = new Date(
-      a.entry.joinedQueueAt
-    ).getTime();
-
-    const timeB = new Date(
-      b.entry.joinedQueueAt
-    ).getTime();
-
-    if (timeA !== timeB) {
-      return timeA - timeB;
-    }
-
-    // Stable tie-breaker
-    return a.entry.id.localeCompare(b.entry.id);
-  }
-
-  function validateEntry(entry: TicketQueueEntry, now: Date): string | null {
-    // Rule 1: Entry is cancelled
-    if (entry.status === "cancelled") {
-      return "Cancelled entry";
-    }
-
-    // Rule 2: Entry was already upgraded
-    if (entry.status === "upgraded") {
-      return "Already upgraded";
-    }
-
-    // Rule 3: Concert has already started
-    const eventStart = new Date(entry.eventStartsAt);
-
-    if (Number.isNaN(eventStart.getTime())) {
-      return "Invalid event start time";
-    }
-
-    if (now.getTime() >= eventStart.getTime()) {
-      return "Concert has already started";
-    }
-
-    // Rule 4: Fan is blocked
-    if (entry.membership === "blocked") {
-      return "Fan is blocked";
-    }
-
-    // Rule 5: Ticket value must be valid and positive
-    const ticketValue =
-      typeof entry.ticketValue === "string"
-        ? Number(entry.ticketValue.trim())
-        : entry.ticketValue;
-
-    if (
-      ticketValue === null ||
-      ticketValue === undefined ||
-      typeof ticketValue !== "number" ||
-      !Number.isFinite(ticketValue) ||
-      ticketValue <= 0
-    ) {
-      return "Invalid ticket value";
-    }
-
-    // Additional data validation
-    const queueTime = new Date(entry.joinedQueueAt);
-
-    if (Number.isNaN(queueTime.getTime())) {
-      return "Invalid queue join time";
-    }
-
-    return null;
-  }
-
-  function getTicketValue(
-    entry: TicketQueueEntry
-  ): number {
-    return Number(entry.ticketValue);
-  }
-
-  function getSafeNumber(
-    value: number | null | undefined
-  ): number {
-    if (value == null || !Number.isFinite(value)) {
-      return 0;
-    }
-
-    return Math.max(0, value);
-  }
-
+  
   function calculateScore(
     entry: TicketQueueEntry,
     now: Date,
     maxTicketValue: number
   ): RankedEntry {
 
-    const weights = SCORING.WEIGHTS;
+    const weights = scoring;
 
-    // 1. Loyalty Points (0 - 25)
-    const loyaltyPoints = getSafeNumber(
-      entry.loyaltyPoints
+    const loyaltyPoints = Math.max(
+      0,
+      entry.loyaltyPoints ?? 0
     );
 
     const loyaltyScore =
       Math.min(
-        loyaltyPoints / SCORING.MAX_LOYALTY_POINTS,
+        loyaltyPoints / weights.maxLoyaltyPoints,
         1
       ) * weights.loyalty;
 
-    // 2. Waiting Time (0 - 30)
-    const joinedAt = new Date(entry.joinedQueueAt);
-
-    const waitedMs = Math.max(
+    const waitedHours = Math.max(
       0,
-      now.getTime() - joinedAt.getTime()
+      (now.getTime() -
+        new Date(entry.joinedQueueAt).getTime()) /
+        3600000
     );
-
-    const waitedHours =
-      waitedMs / (1000 * 60 * 60);
 
     const waitingScore =
       Math.min(
-        waitedHours / SCORING.MAX_WAIT_HOURS,
+        waitedHours / weights.maxWaitingHours,
         1
       ) * weights.waitingTime;
 
-    // 3. VIP Membership (0 - 15)
     const vipScore =
       entry.membership === "vip"
         ? weights.vip
         : 0;
 
-    // 4. Ticket Value (0 - 15)
-    const ticketValue = getTicketValue(entry);
-
     const ticketScore =
-      (ticketValue / maxTicketValue) *
+      (Number(entry.ticketValue) / maxTicketValue) *
       weights.ticketValue;
 
-    // 5. Upgrade History (0 - 10)
-    const upgrades = getSafeNumber(
-      entry.upgradesLast30Days
+    const upgrades = Math.max(
+      0,
+      entry.upgradesLast30Days ?? 0
     );
 
     const upgradeScore =
       (
         1 -
         Math.min(
-          upgrades / SCORING.MAX_UPGRADES,
+          upgrades / weights.maxUpgrades,
           1
         )
       ) * weights.upgradeHistory;
 
-    // 6. Fairness Bonus (0 - 5)
-    // Starts after waiting for 2 hours
     const fairnessScore =
       Math.min(
-        Math.max(waitedHours - 2, 0) / 22,
+        Math.max(
+          waitedHours - weights.fairnessStartHours,
+          0
+        ) / 22,
         1
       ) * weights.fairness;
 
-    const totalScore =
+    const score =
       loyaltyScore +
       waitingScore +
       vipScore +
@@ -499,7 +385,7 @@ function normalizeIdentifier(
 
     return {
       entry,
-      score: Number(totalScore.toFixed(2)),
+      score: Number(score.toFixed(2)),
       reasons: [
         `Loyalty points: ${loyaltyScore.toFixed(2)}/${weights.loyalty}`,
         `Waiting time: ${waitingScore.toFixed(2)}/${weights.waitingTime}`,
@@ -511,12 +397,152 @@ function normalizeIdentifier(
     };
   }
 
+  function compareRankedEntries(
+    a: RankedEntry,
+    b: RankedEntry
+  ): number {
+
+    if (a.score !== b.score) {
+      return b.score - a.score;
+    }
+
+    const timeA = new Date(
+      a.entry.joinedQueueAt
+    ).getTime();
+
+    console.log("timeA", timeA);
+    
+    const timeB = new Date(
+      b.entry.joinedQueueAt
+    ).getTime();
+
+    if (timeA !== timeB) {
+      return timeA - timeB;
+    }
+
+    return a.entry.id.localeCompare(b.entry.id);
+  }
+
+  function selectRepresentatives(
+    fanGroups: FanGroup[],
+    now: Date,
+    maxTicketValue: number
+  ): FanGroup[] {
+
+    return fanGroups.map(group => {
+
+      const candidates = group.entries
+        .map(entry =>
+          calculateScore(entry, now, maxTicketValue)
+        )
+        .sort(compareRankedEntries);
+
+      return {
+        ...group,
+        representative: candidates[0] ?? null,
+      };
+    });
+  }
+  
+  function selectWinner(
+    fanGroups: FanGroup[]
+  ): RankedEntry | null {
+
+    const representatives = fanGroups
+      .map(group => group.representative)
+      .filter(
+        (entry): entry is RankedEntry =>
+          entry !== null
+      );
+
+    if (representatives.length === 0) {
+      return null;
+    }
+
+    representatives.sort(compareRankedEntries);
+
+    return representatives[0];
+  }
+
+  function buildWinnerReasons(
+    winner: RankedEntry | null,
+    fanGroups: FanGroup[]
+  ): RankedEntry | null {
+
+    if (!winner) {
+      return null;
+    }
+
+    const totalGroups = fanGroups.filter(
+      group => group.representative !== null
+    ).length;
+
+    return {
+      ...winner,
+      reasons: [
+        ...winner.reasons,
+        `Selected as the highest-ranked representative among ${totalGroups} fan groups.`,
+        "Each fan group receives only one representative, regardless of linked account count.",
+        "Ranking is determined by total score, with earlier queue time used as the tie-breaker."
+      ],
+    };
+  }
+
+  function buildFrontRowUpgradeQueue(
+    entries: TicketQueueEntry[],
+    now: Date,
+  ): FrontRowUpgradeResult {
+
+    if (!Number.isFinite(now.getTime())) {
+      throw new Error("Invalid current time");
+    }
+
+    // STEP 1: Remove entries that cannot receive an upgrade
+    const {
+      eligibleEntries,
+      excludedEntries,
+    } = filterEligibleEntries(entries, now);
+
+    // STEP 2: Find accounts belonging to the same fan group
+    const initialGroups = buildFanGroups(eligibleEntries);
+
+    // STEP 3: Choose one representative per fan group
+    const maxTicketValue = eligibleEntries.reduce(
+      (max, entry) =>
+        Math.max(max, Number(entry.ticketValue)),
+      0
+    );
+
+    const fanGroups = selectRepresentatives(
+      initialGroups,
+      now,
+      maxTicketValue
+    );
+
+    // STEP 4: Choose one winner from all representatives
+    const selectedWinner = selectWinner(fanGroups);
+
+    // STEP 5: Explain why the winner was selected
+    const winner = buildWinnerReasons(
+      selectedWinner,
+      fanGroups
+    );
+
+    return {
+      winner,
+      fanGroups,
+      excludedEntries,
+    };
+  }
+
 
   function addItem() {
     const newList = Array.from(list)
-    console.log("obj", obj)
-    console.log(buildFrontRowUpgradeQueue(obj, new Date()));
+    console.log("obj", obj);
+    console.log(new Date());
+    console.log(buildFrontRowUpgradeQueue(obj, new Date("Tue, 19 Aug 1975 23:00:30 GMT")));
     //newList.push(buildFrontRowUpgradeQueue(obj, new Date()).winner?.entry.fanName ?? "No Winner")
+    newList.push(buildFrontRowUpgradeQueue(obj, new Date("Tue, 19 Aug 1975 23:00:30 GMT")).winner?.entry.fanName ?? "No Winner")
     setList(newList)
   }
 
