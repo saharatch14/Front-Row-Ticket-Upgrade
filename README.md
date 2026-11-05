@@ -33,16 +33,16 @@ See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rule
 
 ## Q&A
 Q1.  How does your priority score work? <br>
-  * Check on loyalty, WaitingHours, VIP, ticketValue, upgradeHistory, fairness, and check each entry
+  * Check on loyalty, WaitingHours, VIP, ticketValue, upgradeHistory, fairness, and check each entry <br>
 Q2.  How do you stop one fan group from dominating? <br>
-  * I might check on status and membership
+  * I might check on status and membership <br>
 Q3.  How do you break ties? <br>
-  * I look on who has entry early.
+  * I look on who has entry early. <br>
 Q4.  What is the time complexity of your grouping logic? <br>
-  * High.
+  * High. <br>
 Q5.  What is one case where your system may still feel unfair? <br>
-  * Could be upgrades in the last 30 days.
+  * Could be upgrades in the last 30 days. <br>
 Q6.  How do Rush Hour, VIP Hour, and Fair Queue Mode work? <br>
-  * By checking the time for each section.
+  * By checking the time for each section. <br>
 Q7.  What would you improve with more time? <br>
-  * Ui and some minor conditions like fan group
+  * Ui and some minor conditions like fan group <br>
